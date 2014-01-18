@@ -1,17 +1,17 @@
 (ns cloutjure.input.irc
-  (:require (cloutjure.data [messages :as messages]
-                            [links    :as links]
-                            [hashes   :refer [sha-256]])
-            [cloutjure.common         :as common :refer [init-db!]]
+  (:require (cloutjure.data [hashes   :refer [sha-256]])
             [pl.danieljanus.tagsoup   :as tagsoup]
-            [somnium.congomongo       :as m]
-            (clj-time       [core     :as t]
-                            [format   :as t.f])
-            [swiss-arrows.core :refer :all])
+            [clj-time       [core     :as t]
+                            [format   :as t.f]]
+            [bitemyapp.revise  
+                            [connection :refer [connect close]]
+                            [query    :as r]
+                            [core     :refer [run-async]]])
   (:gen-class))
 
 
 (def url-formatter (t.f/formatter "YYYY-MM-dd"))
+(def fmt (partial format "%20.20s | %20.20s | %40.40s"))
 
 (defn date->url
   "Formats a clj-time date into a logfile path for
@@ -56,29 +56,35 @@
      :hash    (sha-256 message)}))
 
 
-(def clj-epoch (t/date-time 2008 2 1))
-
-(defn process-days-log! 
+(defn process-days-log
   "Takes a date and attempts to parse the day's logs, writing to the
   datastore as appropriate."
 
-  [day]
+  [conn day]
   (try
     (let [tree (tagsoup/parse (date->url day))
           name-atom (atom "")]
-      (doseq [message (-<> tree
-                           (get-in <> [3 3 8])
-                           (drop 2 <>)
-                           (filter #(= :p (first %1)) <>))]
+      (doseq [message (as-> tree v
+                           (get-in v[3 3 8])
+                           (drop 2 v)
+                           (filter #(= :p (first %1)) v))]
         (let [message (p->message name-atom day message)]
           (try
             (assert (not (= (:author message) " ")))
-            (m/insert! :messages message)
-            (catch Exception e (println 
-                                (format "%20s | %20s | %40s" day e (pr-str message))))))))
-    (println (format "%20s | %20s | %40s" day nil nil))
+            (assert 
+             (not 
+              (:error
+               (-> (r/db "cloutjure")
+                   (r/table-db "n01se")
+                   (r/insert message)
+                   (run-async conn)))))
+            (catch Exception e 
+              (println (fmt day e (pr-str message))))))))
+
+    (println (fmt day "End of day" nil))
+
     (catch Exception e 
-      (println (format "%20s | %20s | %40s" day e nil)))))
+      (println (fmt day e nil)))))
 
 
 (defn -main
@@ -92,11 +98,21 @@
   sneak in behind my back."
 
   []
-  (common/init-db!)
-  (let [interval  (t/interval clj-epoch (t/now))]
-    (doseq [day-offset (range (t/in-days interval))]
-      (let [date (->> day-offset
-                      (t/days)
-                      (t/plus clj-epoch))]
-        (process-days-log! date)))))
+  (let [conn      (connect {:host "brick"
+                            :port 28015})
+        clj-epoch (t/date-time 2008 2 1) ;; first logged day
+        interval  (t/interval clj-epoch (t/now))]
+    (doseq [chunks (->> interval
+                        t/in-days
+                        range
+                        (partition 8))]
+      (->> chunks
+           (mapv (fn [offset]
+                  (future
+                    (->> offset
+                         (t/days)
+                         (t/plus clj-epoch)
+                         (process-days-log conn)))))
+           (mapv deref))
+      (println "Done with chunks:" chunks))))
 
