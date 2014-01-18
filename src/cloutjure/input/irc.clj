@@ -102,17 +102,11 @@
                             :port 28015})
         clj-epoch (t/date-time 2008 2 1) ;; first logged day
         interval  (t/interval clj-epoch (t/now))]
-    (doseq [chunks (->> interval
+    (doseq [offset (->> interval
                         t/in-days
-                        range
-                        (partition 8))]
-      (->> chunks
-           (mapv (fn [offset]
-                  (future
-                    (->> offset
-                         (t/days)
-                         (t/plus clj-epoch)
-                         (process-days-log conn)))))
-           (mapv deref))
-      (println "Done with chunks:" chunks))))
+                        range)]
+      (->> offset
+           (t/days)
+           (t/plus clj-epoch)
+           (process-days-log conn)))))
 
