@@ -1,8 +1,6 @@
 (ns cloutjure.data.messages
-  (:require [cloutjure.data.hashes :refer [sha-1 md5]]
-            [somnium.congomongo :as m]
-            [clj-time.core :refer [DateTimeProtocol]])
-  (:import [java.security MessageDigest]))
+  (:require [cloutjure.data.hashes
+             :refer [sha-1]]))
 
 ;; ## Messages
 ;;
@@ -40,23 +38,18 @@
 ;; insertion statement.
 
 
-(def ^:dynamic *hash-fn* sha-1)
-
-(def ^:dynamic *collection* :messages)
-
-
 (defn message?
   "Checks the argument structure against the type structure definition
   of a Message."
 
   [maybe-mesage]
   (and (map? maybe-mesage)
-       (every? (partial contains? maybe-mesage)
-               [:author :date :source :hash])
+       (every?  (partial contains? maybe-mesage)
+                [:author :date :source :hash])
        (string? (:author maybe-mesage))
        (string? (:source maybe-mesage))
        (string? (:hash   maybe-mesage))
-       (map? (:date maybe-mesage))))
+       (map?    (:date maybe-mesage))))
 
 
 (defn hash-text
@@ -70,16 +63,8 @@
   *hash-fn* symbol, so it is quite possible to configure the hashing
   algorithtm used to compute the message digests."
 
-  [text]
-  (*hash-fn* text))
+  ([text]
+     (hash-text sha-1 text))
 
-
-(defn log! 
-  "Inserts a message into the logstore after verifying that it is a
-  valid message and computing its hash just to make sure."
-
-  [maybe-message]
-  (when (message? maybe-message)
-    (if (m/fetch *collection* {:hash (:hash maybe-message)})
-      (m/update! *collection* maybe-message)
-      (m/insert! *collection* maybe-message))))
+  ([hashfn text]
+     (hashfn text)))
