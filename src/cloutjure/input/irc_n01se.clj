@@ -1,4 +1,4 @@
-(ns cloutjure.input.irc
+(ns cloutjure.input.irc_n01se
   (:require [cloutjure.data
              [hashes   :refer [sha-256]]]
 
