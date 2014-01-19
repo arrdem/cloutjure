@@ -73,7 +73,7 @@
   "Takes a date and attempts to parse the day's logs, writing to the
   datastore as appropriate."
 
-  [conn day]
+  [conn {:keys [db table]} day]
   (try
     (let [tree (tagsoup/parse (date->url day))
           name-atom (atom "")]
@@ -84,8 +84,8 @@
         (let [message (p->message name-atom day messages)]
           (try
             (assert (not (= (:author message) " ")))
-            (-> (r/db "cloutjure")
-                (r/table-db "n01se")
+            (-> (r/db db)
+                (r/table-db table)
                 (r/insert message)
                 (run conn)
                 :error
@@ -101,12 +101,12 @@
       (println (fmt day e (root-cause e))))))
 
 
-(defn ->worker [clj-epoch conn]
+(defn ->worker [clj-epoch conn conn-opts]
   (fn [offset]
     (let [date (->> offset
                     (t/days)
                     (t/plus clj-epoch))]
-         (process-days-log conn date)
+         (process-days-log conn conn-opts date)
          (spit "snapshot.log"
                (t.f/unparse url-formatter date)))))
 
@@ -124,21 +124,25 @@
   [cfgfile]
   (let [{:keys [conn-opts worker-count snapshotfile]}
                   (read-string (slurp cfgfile))
+        {:keys [db table clean]} conn-opts
         conn      (connect conn-opts)
         clj-epoch (t.f/parse url-formatter
                              (slurp snapshotfile))]
 
     (println clj-epoch)
 
-    ;; clobber the existing table if one exists...
-    (-> (r/db "cloutjure")
-        (r/table-drop-db "n01se")
-        (run conn))
+    (when clean
+      (do (println "[DEBUG] Clobbering existing DB in 10s...")
+          (Thread/sleep 10000)
+          ;; clobber the existing table if one exists...
+          (-> (r/db db)
+              (r/table-drop-db table)
+              (run conn))
 
-    ;; create a new empty database
-    (-> (r/db "cloutjure")
-        (r/table-create-db "n01se")
-        (run conn))
+          ;; create a new empty database
+          (-> (r/db db)
+              (r/table-create-db table)
+              (run conn))))
 
     (let [work-range (->> (t/interval clj-epoch
                                       (t/now))
@@ -147,7 +151,8 @@
           fns   (->> (range worker-count)
                      (map (fn [_]
                             (->worker clj-epoch
-                                      (connect conn-opts)))))
+                                      (connect conn-opts)
+                                      conn-opts))))
           workers (map (fn [x y] #(x y))
                        (cycle fns)
                        work-range)]
