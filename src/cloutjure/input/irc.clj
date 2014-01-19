@@ -77,11 +77,11 @@
   (try
     (let [tree (tagsoup/parse (date->url day))
           name-atom (atom "")]
-      (doseq [message (as-> tree v
+      (doseq [messages (as-> tree v
                             (get-in v[3 3 8])
                             (drop 2 v)
                             (filter #(= :p (first %1)) v))]
-        (let [message (p->message name-atom day message)]
+        (let [message (p->message name-atom day messages)]
           (try
             (assert (not (= (:author message) " ")))
             (-> (r/db "cloutjure")
@@ -121,11 +121,12 @@
   threaded script with no paralellism besides any which Clojure may
   sneak in behind my back."
 
-  []
-  (let [conn-opts {:host "10.8.0.1"
-                   :port 28015}
+  [cfgfile]
+  (let [{:keys [conn-opts worker-count snapshotfile]}
+                  (read-string (slurp cfgfile))
         conn      (connect conn-opts)
-        clj-epoch (t.f/parse url-formatter (slurp "snapshot.log"))]
+        clj-epoch (t.f/parse url-formatter
+                             (slurp snapshotfile))]
 
     (println clj-epoch)
 
@@ -143,11 +144,11 @@
                                       (t/now))
                           t/in-days
                           range)
-          fns   (->> (range 8)
-                     (mapv (fn [_]
-                             (->worker clj-epoch
-                                       (connect conn-opts)))))
-          workers (mapv (fn [x y] #(x y))
-                        (cycle fns)
-                        work-range)]
-      (work workers 8))))
+          fns   (->> (range worker-count)
+                     (map (fn [_]
+                            (->worker clj-epoch
+                                      (connect conn-opts)))))
+          workers (map (fn [x y] #(x y))
+                       (cycle fns)
+                       work-range)]
+      (work workers worker-count))))
