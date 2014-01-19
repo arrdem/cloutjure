@@ -14,7 +14,9 @@
              [query    :as r]
              [core     :refer [run run-async]]]
 
-            [clojure.stacktrace :refer [root-cause]])
+            [clojure
+             [stacktrace :refer [root-cause]]
+             [string     :refer [trim]]]
   (:gen-class))
 
 
@@ -43,8 +45,10 @@
   [name-atom year-month-day-date [_p _m0 [_a _m1 date] & tail]]
 
   (if (vector? (first tail))
-    (let [[_b _m uname] (first tail)]
-      (when (= _b :b)
+    (let [[_b _m uname] (first tail)
+          uname (trim uname)]
+      (when (and (= _b :b)
+                 (not (= uname "*")))
         (let [user (second (re-find #"(\w*?):.*" uname))]
           (reset! name-atom user)))))
 
