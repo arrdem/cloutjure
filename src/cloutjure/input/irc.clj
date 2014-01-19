@@ -1,17 +1,25 @@
 (ns cloutjure.input.irc
-  (:require (cloutjure.data [hashes   :refer [sha-256]])
-            [pl.danieljanus.tagsoup   :as tagsoup]
-            [clj-time       [core     :as t]
-                            [format   :as t.f]]
-            [bitemyapp.revise  
-                            [connection :refer [connect close]]
-                            [query    :as r]
-                            [core     :refer [run-async]]])
+  (:require [cloutjure.data
+             [hashes   :refer [sha-256]]]
+
+            [pl.danieljanus.tagsoup
+             :as tagsoup]
+
+            [clj-time
+             [core     :as t]
+             [format   :as t.f]]
+
+            [bitemyapp.revise
+             [connection :refer [connect close]]
+             [query    :as r]
+             [core     :refer [run run-async]]]
+
+            [clojure.stacktrace :refer [root-cause]])
   (:gen-class))
 
 
 (def url-formatter (t.f/formatter "YYYY-MM-dd"))
-(def fmt (partial format "%20.20s | %20.20s | %40.40s"))
+(def fmt (partial format "%20.20s | %20.20s | %80.80s"))
 
 (defn date->url
   "Formats a clj-time date into a logfile path for
@@ -24,7 +32,7 @@
 (def hour-minute-formatter (t.f/formatters :hour-minute))
 
 (defn p->message
-  "Converts a [:p {} [:a {} <date-in-minutes-and-seconds>] 
+  "Converts a [:p {} [:a {} <date-in-minutes-and-seconds>]
                      [:b {} <user>]
                      & message]
 
@@ -35,17 +43,16 @@
   [name-atom year-month-day-date [_p _m0 [_a _m1 date] & tail]]
 
   (if (vector? (first tail))
-    (let [[_b _m uname] (first tail)
-          user (second (re-find #"(\w*?):.*" uname))]
-      (when (or (not (re-find #"\\*" uname))
-                user)
-        (reset! name-atom user))))
-      
+    (let [[_b _m uname] (first tail)]
+      (when (= _b :b)
+        (let [user (second (re-find #"(\w*?):.*" uname))]
+          (reset! name-atom user)))))
+
   (let [message (if (vector? (first tail)) (rest tail) tail)
         message (apply str (interpose " " message))]
     {:message message
      :author  @name-atom
-     :date    (let [{:keys [hours minutes]} 
+     :date    (let [{:keys [hours minutes]}
                     (->> date
                          (t.f/parse hour-minute-formatter)
                          (t.f/instant->map))]
@@ -65,26 +72,37 @@
     (let [tree (tagsoup/parse (date->url day))
           name-atom (atom "")]
       (doseq [message (as-> tree v
-                           (get-in v[3 3 8])
-                           (drop 2 v)
-                           (filter #(= :p (first %1)) v))]
+                            (get-in v[3 3 8])
+                            (drop 2 v)
+                            (filter #(= :p (first %1)) v))]
         (let [message (p->message name-atom day message)]
           (try
             (assert (not (= (:author message) " ")))
-            (assert 
-             (not 
-              (:error
-               (-> (r/db "cloutjure")
-                   (r/table-db "n01se")
-                   (r/insert message)
-                   (run-async conn)))))
-            (catch Exception e 
-              (println (fmt day e (pr-str message))))))))
+            (-> (r/db "cloutjure")
+                (r/table-db "n01se")
+                (r/insert message)
+                (run conn)
+                :error
+                not
+                (assert "Failed to write back message!"))
 
-    (println (fmt day "End of day" nil))
+            (catch Exception e
+              (println (fmt day e (pr-str message)))))))
 
-    (catch Exception e 
-      (println (fmt day e nil)))))
+      (println (fmt day "End of day" (str "last message from " @name-atom))))
+
+    (catch Exception e
+      (println (fmt day e (root-cause e))))))
+
+
+(defn ->worker [offset a clj-epoch conn]
+  (fn []
+    (swap! a inc)
+    (->> offset
+         (t/days)
+         (t/plus clj-epoch)
+         (process-days-log conn))
+    (swap! a dec)))
 
 
 (defn -main
@@ -98,15 +116,46 @@
   sneak in behind my back."
 
   []
-  (let [conn      (connect {:host "brick"
-                            :port 28015})
+  (let [conn-opts {:host "10.8.0.1"
+                   :port 28015}
+        conn      (connect conn-opts)
         clj-epoch (t/date-time 2008 2 1) ;; first logged day
         interval  (t/interval clj-epoch (t/now))]
-    (doseq [offset (->> interval
-                        t/in-days
-                        range)]
-      (->> offset
-           (t/days)
-           (t/plus clj-epoch)
-           (process-days-log conn)))))
 
+    (-> (r/db "cloutjure")
+        (r/table-drop-db "n01se")
+        (run conn))
+
+    (-> (r/db "cloutjure")
+        (r/table-create-db "n01se")
+        (run conn))
+
+    (doseq [block (->> interval
+                       t/in-days
+                       range
+                       (partition 8))]
+      (let [counter (atom 0)
+            conns   (mapv (fn [_] (connect conn-opts))
+                          (range 8))
+            threads (mapv #(Thread.
+                            (->worker %1 counter
+                                      clj-epoch %2))
+                          blockz
+                          conns)]
+
+        (doseq [t threads] (.start t))
+
+        (loop [counter counter]
+          (if-not (zero? @counter)
+            (do (Thread/sleep 10000)
+                (recur counter))))
+
+        (doseq [t threads] (.stop t))
+
+        (println "Done with block " block)
+
+        (spit "snapshot.log"
+              (->> (last block)
+                   (t/days)
+                   (t/plus clj-epoch)
+                   (t.f/unparse url-formatter)))))))
