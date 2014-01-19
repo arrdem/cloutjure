@@ -51,7 +51,7 @@
           uname (trim uname)]
       (when (and (= _b :b)
                  (not (= uname "*")))
-        (let [user (second (re-find #"(\w*?):.*" uname))]
+        (let [user (second (re-find #"(\S*?):.*" uname))]
           (reset! name-atom user)))))
 
   (let [message (if (vector? (first tail)) (rest tail) tail)
