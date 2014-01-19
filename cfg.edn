@@ -3,5 +3,5 @@
              :table "n01se"
              :clean true}
  :snapshotfile "snapshot.log"
- :worker-count 50
+ :worker-count 512
 }
