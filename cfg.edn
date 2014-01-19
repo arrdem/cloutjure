@@ -1,0 +1,7 @@
+{:conn-opts {:host  "127.0.0.1"
+             :db    "cloutjure"
+             :table "n01se"
+             :clean true}
+ :snapshotfile "snapshot.log"
+ :worker-count 50
+}
