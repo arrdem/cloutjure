@@ -18,7 +18,7 @@
 
             [clojure
              [stacktrace :refer [root-cause]]
-             [string     :refer [trim]]]
+             [string     :refer [trim]]])
   (:gen-class))
 
 
