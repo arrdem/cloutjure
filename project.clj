@@ -8,4 +8,5 @@
                  [clj-time "0.6.0"]
                  [clj-http "0.7.8"]
                  [clj-tagsoup "0.3.0"]
+                 [rate-gate "1.3.1"]
                  [revise "0.0.5"]])

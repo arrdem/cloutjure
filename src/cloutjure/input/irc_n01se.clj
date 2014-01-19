@@ -1,4 +1,4 @@
-(ns cloutjure.input.irc_n01se
+(ns cloutjure.input.irc-n01se
   (:require [cloutjure.data
              [hashes   :refer [sha-256]]]
 
@@ -15,6 +15,8 @@
              [connection :refer [connect close]]
              [query    :as r]
              [core     :refer [run run-async]]]
+
+            [rate-gate.core :refer [rate-gate tarry]]
 
             [clojure
              [stacktrace :refer [root-cause]]
@@ -69,13 +71,16 @@
      :hash    (sha-256 message)}))
 
 
+(def gate (rate-gate 4 1000))
+
 (defn process-days-log
   "Takes a date and attempts to parse the day's logs, writing to the
   datastore as appropriate."
 
   [conn {:keys [db table]} day]
   (try
-    (let [tree (tagsoup/parse (date->url day))
+    (let [tree (do (tarry gate)
+                   (tagsoup/parse (date->url day)))
           name-atom (atom "")]
       (doseq [messages (as-> tree v
                             (get-in v[3 3 8])
@@ -84,16 +89,24 @@
         (let [message (p->message name-atom day messages)]
           (try
             (assert (not (= (:author message) " ")))
-            (-> (r/db db)
-                (r/table-db table)
-                (r/insert message)
-                (run conn)
-                :error
-                not
-                (assert "Failed to write back message!"))
+            (loop [n 10]
+              (let [res (-> (r/db db)
+                            (r/table-db table)
+                            (r/insert message)
+                            (run conn)
+                            :error)]
+                (cond (= n 0)
+                        (println
+                         (fmt day "Fatally failed" (first res)))
+
+                      (not res)
+                        nil
+
+                      true
+                        (recur (dec n)))))
 
             (catch Exception e
-              (println (fmt day e (pr-str message)))))))
+              (println (fmt day e (root-cause e)))))))
 
       (println (fmt day "End of day" (str "last message from " @name-atom))))
 
@@ -101,16 +114,18 @@
       (println (fmt day e (root-cause e))))))
 
 
-(defn ->worker [clj-epoch conn conn-opts]
+(defn ->worker [clj-epoch conn conn-opts snapshotfile]
   (fn [offset]
     (let [date (->> offset
                     (t/days)
                     (t/plus clj-epoch))]
          (process-days-log conn conn-opts date)
-         (spit "snapshot.log"
+         (spit snapshotfile
                (t.f/unparse url-formatter date)))))
 
 
+;; main bootloader thread
+;;------------------------------------------------------------------------------
 (defn -main
   "The entry point of this codebase, essentially a simple crawler
   script which browses http://clojure-log.n01se.net/date/* and uses
@@ -152,7 +167,8 @@
                      (map (fn [_]
                             (->worker clj-epoch
                                       (connect conn-opts)
-                                      conn-opts))))
+                                      conn-opts
+                                      snapshotfile))))
           workers (map (fn [x y] #(x y))
                        (cycle fns)
                        work-range)]
