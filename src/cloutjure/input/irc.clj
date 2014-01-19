@@ -2,6 +2,8 @@
   (:require [cloutjure.data
              [hashes   :refer [sha-256]]]
 
+            [cloutjure.parallelism :refer [work]]
+
             [pl.danieljanus.tagsoup
              :as tagsoup]
 
@@ -99,14 +101,14 @@
       (println (fmt day e (root-cause e))))))
 
 
-(defn ->worker [offset a clj-epoch conn]
-  (fn []
-    (swap! a inc)
-    (->> offset
-         (t/days)
-         (t/plus clj-epoch)
-         (process-days-log conn))
-    (swap! a dec)))
+(defn ->worker [clj-epoch conn]
+  (fn [offset]
+    (let [date (->> offset
+                    (t/days)
+                    (t/plus clj-epoch))]
+         (process-days-log conn date)
+         (spit "snapshot.log"
+               (t.f/unparse url-formatter date)))))
 
 
 (defn -main
@@ -123,43 +125,29 @@
   (let [conn-opts {:host "10.8.0.1"
                    :port 28015}
         conn      (connect conn-opts)
-        clj-epoch (t/date-time 2008 2 1) ;; first logged day
-        interval  (t/interval clj-epoch (t/now))]
+        clj-epoch (t.f/parse url-formatter (slurp "snapshot.log"))]
 
+    (println clj-epoch)
+
+    ;; clobber the existing table if one exists...
     (-> (r/db "cloutjure")
         (r/table-drop-db "n01se")
         (run conn))
 
+    ;; create a new empty database
     (-> (r/db "cloutjure")
         (r/table-create-db "n01se")
         (run conn))
 
-    (doseq [block (->> interval
-                       t/in-days
-                       range
-                       (partition 8))]
-      (let [counter (atom 0)
-            conns   (mapv (fn [_] (connect conn-opts))
-                          (range 8))
-            threads (mapv #(Thread.
-                            (->worker %1 counter
-                                      clj-epoch %2))
-                          blockz
-                          conns)]
-
-        (doseq [t threads] (.start t))
-
-        (loop [counter counter]
-          (if-not (zero? @counter)
-            (do (Thread/sleep 10000)
-                (recur counter))))
-
-        (doseq [t threads] (.stop t))
-
-        (println "Done with block " block)
-
-        (spit "snapshot.log"
-              (->> (last block)
-                   (t/days)
-                   (t/plus clj-epoch)
-                   (t.f/unparse url-formatter)))))))
+    (let [work-range (->> (t/interval clj-epoch
+                                      (t/now))
+                          t/in-days
+                          range)
+          fns   (->> (range 8)
+                     (mapv (fn [_]
+                             (->worker clj-epoch
+                                       (connect conn-opts)))))
+          workers (mapv (fn [x y] #(x y))
+                        (cycle fns)
+                        work-range)]
+      (work workers 8))))
